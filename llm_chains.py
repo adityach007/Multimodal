@@ -22,6 +22,26 @@ import webbrowser
 import keyboard
 from langchain_community.tools import DuckDuckGoSearchRun
 import re
+import pyperclip  # Add this import at the top
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import pyperclip
+import time
+import glob
+from pathlib import Path
+import win32com.client
+from win32gui import GetWindowText, EnumWindows, GetForegroundWindow, SetWindowPos, GetWindowRect
+from win32con import HWND_TOP, SWP_SHOWWINDOW
+import win32gui
+import win32con
+
+# Add these imports at the top
+import win32com.client as win32
+from win32com.client import constants
+import os.path
+import pythoncom
 
 # Load environment variables and configuration
 load_dotenv()
@@ -83,6 +103,133 @@ def web_search(query: str, num_results: int = 3) -> str:
     except Exception as e:
         return f"Web search error: {str(e)}. Proceeding with AI knowledge only."
 
+def minimize_active_window():
+    """Minimize the currently active window."""
+    try:
+        import win32gui
+        import win32con
+        
+        # Get handle of active window
+        hwnd = win32gui.GetForegroundWindow()
+        # Minimize window
+        win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+        return True
+    except Exception as e:
+        print(f"Error minimizing window: {str(e)}")
+        return False
+
+def resize_active_window():
+    """Resize the currently active window to a smaller size."""
+    try:
+        import win32gui
+        import win32con
+        
+        # Get handle of active window
+        hwnd = win32gui.GetForegroundWindow()
+        
+        # Get screen dimensions
+        screen_width = win32gui.GetSystemMetrics(win32con.SM_CXSCREEN)
+        screen_height = win32gui.GetSystemMetrics(win32con.SM_CYSCREEN)
+        
+        # Calculate new window size (50% of screen)
+        new_width = screen_width // 2
+        new_height = screen_height // 2
+        
+        # Calculate position to center the window
+        new_x = (screen_width - new_width) // 2
+        new_y = (screen_height - new_height) // 2
+        
+        # Set new window position and size
+        win32gui.SetWindowPos(hwnd, win32con.HWND_TOP, new_x, new_y, new_width, new_height, win32con.SWP_SHOWWINDOW)
+        return True
+    except Exception as e:
+        print(f"Error resizing window: {str(e)}")
+        return False
+
+def resize_browser_window():
+    """Resize the active browser window using a more reliable method."""
+    try:
+        def callback(hwnd, windows):
+            if "Chrome" in GetWindowText(hwnd) or "Edge" in GetWindowText(hwnd) or "Firefox" in GetWindowText(hwnd):
+                # Get screen dimensions
+                screen_width = win32gui.GetSystemMetrics(win32con.SM_CXSCREEN)
+                screen_height = win32gui.GetSystemMetrics(win32con.SM_CYSCREEN)
+                
+                # Get current window position and size
+                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+                
+                # Calculate new dimensions (65% of screen)
+                new_width = int(screen_width * 0.65)
+                new_height = int(screen_height * 0.65)
+                
+                # Calculate position to center the window
+                new_x = (screen_width - new_width) // 2
+                new_y = (screen_height - new_height) // 2
+                
+                # Set new window position and size
+                win32gui.SetWindowPos(
+                    hwnd, 
+                    HWND_TOP,
+                    new_x, new_y, new_width, new_height,
+                    win32con.SWP_SHOWWINDOW
+                )
+                return False  # Stop enumeration after finding first browser window
+            return True
+        
+        # Find and resize browser window
+        EnumWindows(callback, [])
+        return True
+    except Exception as e:
+        print(f"Error resizing window: {str(e)}")
+        return False
+
+def create_office_document(app_type: str, content: str = None) -> str:
+    """
+    Create and write to Microsoft Office documents.
+    
+    Args:
+        app_type: 'word', 'excel', or 'powerpoint'
+        content: Content to write in the document
+    """
+    try:
+        # Initialize COM for the current thread
+        pythoncom.CoInitialize()
+        
+        if app_type == 'word':
+            word = win32.Dispatch('Word.Application')
+            word.Visible = True
+            doc = word.Documents.Add()
+            if content:
+                doc.Content.Text = content
+            return "Opened Microsoft Word and added content"
+            
+        elif app_type == 'excel':
+            excel = win32.Dispatch('Excel.Application')
+            excel.Visible = True
+            wb = excel.Workbooks.Add()
+            sheet = wb.ActiveSheet
+            if content:
+                # Split content by lines and write to cells
+                for i, line in enumerate(content.split('\n'), 1):
+                    sheet.Cells(i, 1).Value = line
+            return "Opened Microsoft Excel and added content"
+            
+        elif app_type == 'powerpoint':
+            ppt = win32.Dispatch('PowerPoint.Application')
+            ppt.Visible = True
+            presentation = ppt.Presentations.Add()
+            slide = presentation.Slides.Add(1, 1)  # 1 = layout with title and content
+            if content:
+                slide.Shapes.Title.TextFrame.TextRange.Text = "New Slide"
+                slide.Shapes.Item(2).TextFrame.TextRange.Text = content
+            return "Opened Microsoft PowerPoint and added content"
+            
+    except Exception as e:
+        return f"Error creating {app_type} document: {str(e)}"
+    finally:
+        # Clean up COM
+        pythoncom.CoUninitialize()
+
 class GroqLLM:
     """
     Handles interactions with the Groq API, including retry logic and response formatting.
@@ -101,6 +248,451 @@ class GroqLLM:
         self.model_name = model_name
         self.retry_attempts = retry_attempts
         self.retry_delay = retry_delay
+
+        # Update command patterns to include ChatGPT
+        self.command_patterns = [
+            # Add ChatGPT specific pattern
+            (r'(?i)open\s+chatgpt(?:\s+and\s+search\s+for\s+(.+)|$)', 'chatgpt'),
+            
+            # YouTube specific pattern
+            (r'(?i)(?:play|search|find)\s+(?:video|videos)?\s*["\']?([^"\']+)["\']?\s+(?:on\s+)?youtube', 'youtube'),
+            
+            # Website specific pattern - captures site and search term
+            (r'(?i)open\s+(youtube|google|twitter|facebook|reddit|wikipedia)(?:\s+and\s+search\s+(.+)|$)', 'website'),
+            
+            # General web search pattern
+            (r'(?i)search\s+(?:for\s+)?["\']?([^"\']+)["\']?(?:\s+on\s+(google|bing|duckduckgo))?', 'web_search'),
+            
+            # Generic URL pattern
+            (r'(?i)(?:open|visit|go\sto)\s+(https?://\S+|(?:www\.)?[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:/\S*)?)', 'url')
+        ]
+
+        # Add ChatGPT to websites config
+        self.websites = {
+            'chatgpt': {
+                'url': 'https://chat.openai.com',
+                'search_url': 'https://chat.openai.com',
+            },
+            'youtube': {
+                'url': 'https://www.youtube.com',
+                'search_url': 'https://www.youtube.com/results?search_query={}',
+            },
+            'google': {
+                'url': 'https://www.google.com',
+                'search_url': 'https://www.google.com/search?q={}',
+            },
+            'twitter': {
+                'url': 'https://twitter.com',
+                'search_url': 'https://twitter.com/search?q={}',
+            },
+            'facebook': {
+                'url': 'https://www.facebook.com',
+                'search_url': 'https://www.facebook.com/search/top?q={}',
+            },
+            'reddit': {
+                'url': 'https://www.reddit.com',
+                'search_url': 'https://www.reddit.com/search/?q={}',
+            },
+            'wikipedia': {
+                'url': 'https://www.wikipedia.org',
+                'search_url': 'https://en.wikipedia.org/wiki/Special:Search?search={}',
+            }
+        }
+
+        # Add delay configuration for automation
+        self.automation_delays = {
+            'chatgpt_load': 5,  # Seconds to wait for ChatGPT to load
+            'input_delay': 1,   # Seconds to wait before typing
+            'send_delay': 0.5   # Seconds to wait before pressing enter
+        }
+
+        # Add online compiler to websites config
+        self.websites['compiler'] = {
+            'url': 'https://www.programiz.com/python-programming/online-compiler/',
+            'elements': {
+                'editor': 'textarea.CodeMirror-line',
+                'run_button': 'button.run-button'
+            }
+        }
+        
+        # Update command patterns to include complex actions
+        self.command_patterns = [
+            # Add new pattern for ChatGPT code generation and execution
+            (r'(?i)open\s+chatgpt\s+(?:and\s+)?(?:write|generate)\s+(?:some\s+)?code\s+(?:and|then)\s+execute\s+(?:it\s+)?(?:in|using|with)?\s+(?:an\s+)?online\s+compiler', 'chatgpt_code_execution'),
+            # ... existing patterns ...
+        ]
+
+        # Add new patterns for file/folder operations
+        self.command_patterns.extend([
+            (r'(?i)find\s+(?:and\s+)?open\s+(?:folder|directory)\s+(?:named\s+)?["\']?([^"\']+)["\']?', 'find_folder'),
+            (r'(?i)find\s+(?:and\s+)?open\s+file\s+(?:named\s+)?["\']?([^"\']+)["\']?', 'find_file'),
+            (r'(?i)search\s+(?:for\s+)?(?:folder|directory|file)\s+["\']?([^"\']+)["\']?', 'search_item'),
+            (r'(?i)open\s+(?:folder|directory|file)\s+["\']?([^"\']+)["\']?', 'open_item')
+        ])
+
+        # Add default search paths
+        self.search_paths = [
+            os.path.normpath(os.path.expanduser("~")),  # User's home directory
+            os.path.normpath(os.path.expanduser("~/Documents")),
+            os.path.normpath(os.path.expanduser("~/Desktop")),
+            os.path.normpath(os.path.expanduser("~/Downloads")),
+            os.path.normpath("C:/"),  # System drive
+        ]
+
+        # Add Microsoft Office patterns
+        self.command_patterns.extend([
+            (r'(?i)open\s+(?:microsoft\s+)?word(?:\s+and\s+write\s+(.+)|$)', 'word'),
+            (r'(?i)open\s+(?:microsoft\s+)?excel(?:\s+and\s+write\s+(.+)|$)', 'excel'),
+            (r'(?i)open\s+(?:microsoft\s+)?powerpoint(?:\s+and\s+write\s+(.+)|$)', 'powerpoint'),
+            (r'(?i)create\s+(?:a\s+)?(?:new\s+)?(word|excel|powerpoint)\s+(?:document|file|presentation)(?:\s+with\s+(.+)|$)', 'office_create'),
+        ])
+
+    def windows_search(self, query: str, item_type: str = 'both') -> List[str]:
+        """
+        Use Windows Search to find files or folders.
+        
+        Args:
+            query: Search query
+            item_type: 'file', 'folder', or 'both'
+            
+        Returns:
+            List of found paths
+        """
+        try:
+            shell = win32com.client.Dispatch("Shell.Application")
+            search_folder = shell.NameSpace("shell:SearchHomeFolder")
+            
+            # Build search query
+            if item_type == 'folder':
+                search_query = f"System.ItemType:=\"Folder\" AND System.FileName:=\"*{query}*\""
+            elif item_type == 'file':
+                search_query = f"System.ItemType:!=\"Folder\" AND System.FileName:=\"*{query}*\""
+            else:
+                search_query = f"System.FileName:=\"*{query}*\""
+            
+            items = search_folder.Items().Filter(search_query)
+            return [item.Path for item in items]
+        except Exception as e:
+            return []
+
+    def fallback_search(self, query: str, item_type: str = 'both') -> List[str]:
+        """
+        Fallback search method using glob.
+        """
+        results = []
+        for base_path in self.search_paths:
+            try:
+                if item_type in ['both', 'file']:
+                    # Search for files
+                    for file in glob.glob(f"{base_path}/**/*{query}*", recursive=True):
+                        if os.path.isfile(file):
+                            results.append(file)
+                
+                if item_type in ['both', 'folder']:
+                    # Search for folders
+                    for folder in glob.glob(f"{base_path}/**/*{query}*", recursive=True):
+                        if os.path.isdir(folder):
+                            results.append(folder)
+            except Exception:
+                continue
+        return results
+
+    def open_item(self, path: str) -> str:
+        """
+        Open a file or folder using the default application.
+        """
+        try:
+            # Normalize the path before opening
+            normalized_path = os.path.normpath(path)
+            os.startfile(normalized_path)
+            return f"Successfully opened: {normalized_path}"
+        except Exception as e:
+            return f"Error opening {normalized_path}: {str(e)}"
+
+    def execute_file_operation(self, operation: str, query: str) -> str:
+        """
+        Execute file/folder operations.
+        """
+        try:
+            if operation == 'find_folder':
+                results = self.windows_search(query, 'folder') or self.fallback_search(query, 'folder')
+            elif operation == 'find_file':
+                results = self.windows_search(query, 'file') or self.fallback_search(query, 'file')
+            else:  # search_item or open_item
+                results = self.windows_search(query, 'both') or self.fallback_search(query, 'both')
+
+            if not results:
+                return f"No items found matching '{query}'"
+
+            # Format results
+            result_text = f"Found {len(results)} items matching '{query}':\n"
+            for i, path in enumerate(results, 1):
+                result_text += f"{i}. {path}\n"
+
+            # If it's an open operation, open the first result
+            if operation in ['open_item', 'find_file', 'find_folder']:
+                result_text += "\n" + self.open_item(results[0])
+
+            return result_text
+
+        except Exception as e:
+            return f"Error executing file operation: {str(e)}"
+
+    def execute_web_action(self, action_type: str, params: dict) -> str:
+        """Execute web-related actions with improved handling."""
+        try:
+            if action_type == 'chatgpt':
+                query = params.get('query', '')
+                url = self.websites['chatgpt']['url']
+                
+                # Open ChatGPT
+                webbrowser.open(url)
+                
+                if query:
+                    # Wait for page to load
+                    time.sleep(self.automation_delays['chatgpt_load'])
+                    
+                    # Move to center of screen (where ChatGPT input usually is)
+                    screen_width, screen_height = pyautogui.size()
+                    pyautogui.moveTo(screen_width // 2, screen_height - 200)
+                    pyautogui.click()
+                    
+                    # Wait before typing
+                    time.sleep(self.automation_delays['input_delay'])
+                    
+                    # Type the query
+                    pyautogui.write(query)
+                    
+                    # Wait before pressing enter
+                    time.sleep(self.automation_delays['send_delay'])
+                    pyautogui.press('enter')
+                    
+                    # Wait for response and copy it
+                    time.sleep(5)  # Wait for response to appear
+                    pyautogui.hotkey('ctrl', 'a')  # Select all
+                    time.sleep(0.5)
+                    pyautogui.hotkey('ctrl', 'c')  # Copy
+                    time.sleep(0.5)
+                    
+                    # Get the copied text
+                    try:
+                        copied_text = pyperclip.paste()
+                        return f"Opened ChatGPT, sent query: {query}\nResponse copied to clipboard:\n{copied_text}"
+                    except:
+                        return f"Opened ChatGPT and sent query: {query} (clipboard access failed)"
+                    
+                return "Opened ChatGPT"
+
+            if action_type == 'youtube':
+                query = params['query']
+                search_url = self.websites['youtube']['search_url'].format(query.replace(' ', '+'))
+                webbrowser.open(search_url)
+                return f"Searching YouTube for: {query}"
+
+            elif action_type == 'website':
+                site = params['site'].lower()
+                query = params.get('query')
+                
+                if site in self.websites:
+                    if query:
+                        url = self.websites[site]['search_url'].format(query.replace(' ', '+'))
+                    else:
+                        url = self.websites[site]['url']
+                    webbrowser.open(url)
+                    return f"Opening {site.title()}{' and searching for: ' + query if query else ''}"
+                return f"Unknown website: {site}"
+
+            elif action_type == 'web_search':
+                query = params['query']
+                engine = params.get('engine', 'google').lower()
+                if engine in self.websites:
+                    search_url = self.websites[engine]['search_url'].format(query.replace(' ', '+'))
+                else:
+                    search_url = self.websites['google']['search_url'].format(query.replace(' ', '+'))
+                webbrowser.open(search_url)
+                return f"Searching {engine.title()} for: {query}"
+
+            elif action_type == 'url':
+                url = params['url']
+                if not url.startswith('http'):
+                    url = 'https://' + url
+                webbrowser.open(url)
+                return f"Opened URL: {url}"
+
+            return "Invalid action type"
+
+        except Exception as e:
+            return f"Error executing web action: {str(e)}"
+
+    def execute_code_in_compiler(self, code: str) -> str:
+        """Execute code in online compiler using Selenium."""
+        try:
+            # Initialize Chrome in headless mode
+            options = webdriver.ChromeOptions()
+            options.add_argument('--headless')
+            driver = webdriver.Chrome(options=options)
+            
+            # Open compiler
+            driver.get(self.websites['compiler']['url'])
+            
+            # Wait for editor to load
+            editor = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, self.websites['compiler']['elements']['editor']))
+            )
+            
+            # Clear default code and input new code
+            driver.execute_script(f"navigator.clipboard.writeText('{code}')")
+            editor.send_keys(pyperclip.paste())
+            
+            # Click run button
+            run_button = driver.find_element(By.CSS_SELECTOR, self.websites['compiler']['elements']['run_button'])
+            run_button.click()
+            
+            # Wait for execution and get output
+            time.sleep(2)
+            output = driver.find_element(By.CSS_SELECTOR, '.output').text
+            
+            driver.quit()
+            return f"Code execution result:\n{output}"
+            
+        except Exception as e:
+            return f"Error executing code: {str(e)}"
+
+    def execute_chatgpt_code_flow(self) -> str:
+        """Handle the complete flow of code generation and execution."""
+        try:
+            # Open ChatGPT
+            result = self.execute_web_action('chatgpt', {
+                'query': 'Write a simple Python code example that demonstrates list comprehension'
+            })
+            
+            # Extract code from clipboard (assuming ChatGPT response was copied)
+            time.sleep(5)  # Wait for ChatGPT to respond
+            code = pyperclip.paste()
+            
+            # Execute the code
+            if code:
+                return self.execute_code_in_compiler(code)
+            return "No code was generated or copied from ChatGPT"
+            
+        except Exception as e:
+            return f"Error in code generation and execution flow: {str(e)}"
+
+    def execute_chatgpt_action(self, query: str = None, resize: bool = True) -> str:
+        """Enhanced ChatGPT interaction with improved window management."""
+        try:
+            # Simulate Ctrl+N to open new tab
+            pyautogui.hotkey('ctrl', 'n')
+            time.sleep(0.5)  # Wait for new tab
+            
+            # Open ChatGPT in the new tab
+            webbrowser.get().open_new_tab(self.websites['chatgpt']['url'])
+            
+            # Wait for page load and browser window to be ready
+            time.sleep(self.automation_delays['chatgpt_load'])
+            
+            if query:
+                # Move to input area and click
+                screen_width, screen_height = pyautogui.size()
+                pyautogui.moveTo(screen_width // 2, screen_height - 200)
+                pyautogui.click()
+                
+                # Type query
+                time.sleep(self.automation_delays['input_delay'])
+                pyautogui.write(query)
+                
+                # Send query
+                time.sleep(self.automation_delays['send_delay'])
+                pyautogui.press('enter')
+                
+                # Wait for response
+                time.sleep(3)
+                
+                # Copy response
+                pyautogui.hotkey('ctrl', 'a')
+                time.sleep(0.5)
+                pyautogui.hotkey('ctrl', 'c')
+                
+                # Get copied response
+                response = pyperclip.paste()
+                
+                # Resize browser window if requested
+                if resize:
+                    time.sleep(0.5)  # Give browser time to fully load
+                    resize_browser_window()
+                
+                return f"ChatGPT Response:\n{response}"
+            
+            # Resize empty ChatGPT window if requested
+            if resize:
+                time.sleep(0.5)  # Give browser time to fully load
+                resize_browser_window()
+            
+            return "Opened ChatGPT in new tab"
+            
+        except Exception as e:
+            return f"Error executing ChatGPT action: {str(e)}"
+
+    def interpret_command(self, user_input: str) -> Tuple[bool, str, List[Dict]]:
+        """Enhanced command interpretation with improved ChatGPT handling."""
+        # Add new ChatGPT patterns
+        chatgpt_patterns = [
+            (r'(?i)ask\s+chatgpt\s+(?:about\s+)?(.+)', 'chatgpt_query'),
+            (r'(?i)(?:get|generate)\s+code\s+from\s+chatgpt\s+for\s+(.+)', 'chatgpt_code'),
+            (r'(?i)open\s+chatgpt\s+(?:and\s+)?(?:ask|write)\s+(.+)', 'chatgpt_query')
+        ]
+        
+        # Add ChatGPT patterns to command patterns
+        self.command_patterns = chatgpt_patterns + self.command_patterns
+        
+        # Add new Microsoft Office patterns at the start of the patterns list
+        office_patterns = [
+            (r'(?i)open\s+(?:microsoft\s+)?word(?:\s+and\s+write\s+(.+)|$)', 'word'),
+            (r'(?i)open\s+(?:microsoft\s+)?excel(?:\s+and\s+write\s+(.+)|$)', 'excel'),
+            (r'(?i)open\s+(?:microsoft\s+)?powerpoint(?:\s+and\s+write\s+(.+)|$)', 'powerpoint'),
+            (r'(?i)create\s+(?:a\s+)?(?:new\s+)?(word|excel|powerpoint)\s+(?:document|file|presentation)(?:\s+with\s+(.+)|$)', 'office_create'),
+        ]
+        
+        # Add office patterns to command patterns
+        self.command_patterns = office_patterns + self.command_patterns
+        
+        for pattern, cmd_type in self.command_patterns:
+            match = re.search(pattern, user_input)
+            if match:
+                if cmd_type in ['chatgpt_query', 'chatgpt_code']:
+                    query = match.group(1)
+                    if cmd_type == 'chatgpt_code':
+                        query = f"Write code for: {query}"
+                    return True, cmd_type, [{'type': 'chatgpt', 'query': query}]
+                elif cmd_type in ['word', 'excel', 'powerpoint']:
+                    content = match.group(1) if match.groups() else None
+                    return True, cmd_type, [{'type': 'office', 'app': cmd_type, 'content': content}]
+                elif cmd_type == 'office_create':
+                    app_type = match.group(1).lower()
+                    content = match.group(2) if len(match.groups()) > 1 else None
+                    return True, cmd_type, [{'type': 'office', 'app': app_type, 'content': content}]
+                    
+                # ... rest of the existing command handling ...
+                
+        return False, '', []
+
+    def execute_command_chain(self, commands: List[Dict]) -> str:
+        """Enhanced command execution with Microsoft Office support."""
+        try:
+            results = []
+            for cmd in commands:
+                if cmd['type'] == 'chatgpt':
+                    result = self.execute_chatgpt_action(cmd.get('query'), resize=True)
+                elif cmd['type'] == 'office':
+                    result = create_office_document(cmd['app'], cmd.get('content'))
+                    results.append(result)
+                else:
+                    # ... existing command execution code ...
+                    result = self.execute_web_action(cmd['type'], cmd)
+                results.append(result)
+            return '\n'.join(results)
+        except Exception as e:
+            return f"Error executing command chain: {str(e)}"
 
     def make_api_call(
         self,
@@ -182,7 +774,7 @@ class GroqLLM:
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
 
-        # Check if prompt needs web search (contains question words or search indicators)
+        # Check if prompt needs web search
         needs_web_search = bool(re.search(
             r'\b(what|how|who|when|where|why|which|search|find|lookup|latest|current|news|update|today|now)\b',
             prompt.lower()
@@ -228,7 +820,7 @@ Format each step as:
         step_count = 1
         while True:
             start_time = time.time()
-            step_data = self.make_api_call(messages, max_tokens=2000)  # Increased from 300
+            step_data = self.make_api_call(messages, max_tokens=2000)
             thinking_time = time.time() - start_time
             
             confidence_str = f" (Confidence: {step_data.get('confidence', 'N/A')}%)"
@@ -252,7 +844,7 @@ Format each step as:
         }"""
         
         messages.append({"role": "user", "content": final_prompt})
-        final_data = self.make_api_call(messages, max_tokens=5000)  # Increased from 500
+        final_data = self.make_api_call(messages, max_tokens=5000)
         yield ("Final Answer", final_data['content'], time.time() - start_time)
 
     def generate_simple_response(
@@ -285,130 +877,6 @@ Format each step as:
         
         response = self.make_api_call(messages, max_tokens=max_tokens)
         return response.get('content', 'Error generating response')
-
-    def execute_command(self, command: str) -> str:
-        """
-        Execute commands to control the local computer and web interactions.
-        """
-        try:
-            parts = command.split(' ', 2)
-            action = parts[0]
-
-            # Web browser commands
-            if action == 'start' and parts[1] == 'chrome':
-                # Extract URL and optional parameters
-                if len(parts) > 2:
-                    params = parts[2].split(' -')
-                    url = params[0]
-                    text = None
-                    new_tab = True
-                    
-                    for param in params[1:]:
-                        if param.startswith('text '):
-                            text = param[5:]
-                        elif param == 'same_tab':
-                            new_tab = False
-                        elif param == 'incognito':
-                            chrome_cmd = f'start chrome --incognito {url}'
-                            subprocess.run(chrome_cmd, shell=True)
-                            return f"Opened Chrome in incognito mode: {url}"
-                    
-                    if new_tab:
-                        chrome_cmd = f'start chrome {url}'
-                        subprocess.run(chrome_cmd, shell=True)
-                    else:
-                        pyautogui.hotkey('alt', 'tab')
-                        time.sleep(0.5)
-                        pyautogui.hotkey('alt', 'd')
-                        time.sleep(0.5)
-                        pyautogui.write(url)
-                        pyautogui.press('enter')
-                    
-                    time.sleep(3)
-                    if text:
-                        pyautogui.write(text)
-                        pyautogui.press('enter')
-                    return f"Opened Chrome {'in new tab' if new_tab else 'in same tab'}: {url}"
-                return "Please provide a URL"
-
-            # Application control
-            elif action == 'app':
-                if len(parts) < 2:
-                    return "Please specify an application"
-                
-                app_cmd = parts[1]
-                if app_cmd == 'notepad':
-                    subprocess.run('notepad.exe', shell=True)
-                    if len(parts) > 2:
-                        time.sleep(1)
-                        pyautogui.write(parts[2])
-                    return "Opened Notepad"
-                elif app_cmd in ['calc', 'mspaint', 'cmd', 'excel', 'word', 'powerpnt']:
-                    subprocess.run(f'start {app_cmd}', shell=True)
-                    return f"Opened {app_cmd}"
-
-            # Window control
-            elif action == 'window':
-                if len(parts) < 2:
-                    return "Please specify a window action"
-                
-                win_cmd = parts[1]
-                if win_cmd == 'minimize':
-                    pyautogui.hotkey('win', 'down')
-                elif win_cmd == 'maximize':
-                    pyautogui.hotkey('win', 'up')
-                elif win_cmd == 'switch':
-                    pyautogui.hotkey('alt', 'tab')
-                elif win_cmd == 'close':
-                    pyautogui.hotkey('alt', 'f4')
-                return f"Window {win_cmd} command executed"
-
-            # System control
-            elif action == 'system':
-                if len(parts) < 2:
-                    return "Please specify a system action"
-                
-                sys_cmd = parts[1]
-                if sys_cmd == 'lock':
-                    subprocess.run('rundll32.exe user32.dll,LockWorkStation', shell=True)
-                elif sys_cmd == 'shutdown':
-                    subprocess.run('shutdown /s /t 60', shell=True)
-                elif sys_cmd == 'restart':
-                    subprocess.run('shutdown /r /t 60', shell=True)
-                elif sys_cmd == 'cancel':
-                    subprocess.run('shutdown /a', shell=True)
-                return f"System {sys_cmd} command executed"
-
-            # Screenshot
-            elif action == 'screenshot':
-                timestamp = time.strftime("%Y%m%d-%H%M%S")
-                if len(parts) > 1 and parts[1] == 'region':
-                    # Region screenshot
-                    print("Select region to capture...")
-                    screenshot = ImageGrab.grab()  # Need to implement region selection
-                else:
-                    # Full screen
-                    screenshot = ImageGrab.grab()
-                filename = f"screenshot_{timestamp}.png"
-                screenshot.save(filename)
-                return f"Screenshot saved as {filename}"
-
-            # Clipboard operations
-            elif action == 'clipboard':
-                if len(parts) > 1:
-                    if parts[1] == 'copy':
-                        pyautogui.hotkey('ctrl', 'c')
-                        return "Copied selection to clipboard"
-                    elif parts[1] == 'paste':
-                        pyautogui.hotkey('ctrl', 'v')
-                        return "Pasted from clipboard"
-
-            # Default command execution
-            result = subprocess.run(command, shell=True, capture_output=True, text=True)
-            return result.stdout if result.returncode == 0 else result.stderr
-            
-        except Exception as e:
-            return str(e)
 
 def create_embeddings(embeddings_path: str = config["embeddings_path"]) -> HuggingFaceInstructEmbeddings:
     """Create embeddings instance for vector storage."""

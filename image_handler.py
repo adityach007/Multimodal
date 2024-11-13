@@ -35,30 +35,27 @@ def handle_image(image_bytes, user_message=None, model="llama-3.2-90b-vision-pre
         image_bytes (bytes): Raw image bytes
         user_message (str, optional): User's query about the image. 
                                       Defaults to a generic description request.
-        model (str): Vision model to use. Options are:
-                    - "llama-3.2-11b-vision-preview"
-                    - "llama-3.2-90b-vision-preview"
+        model (str): Vision model to use
     
     Returns:
-        str: Model's response about the image
+        tuple: (success: bool, response: str)
     """
-    # Validate model choice
-    valid_models = ["llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview"]
-    if model not in valid_models:
-        return f"Invalid model specified. Please choose from: {', '.join(valid_models)}"
-
-    # If no user message is provided, use a default description request
-    if user_message is None:
-        user_message = "Describe this image in detail."
-    
-    # Encode the image to base64
-    base64_image = base64.b64encode(image_bytes).decode('utf-8')
-    
-    # Initialize Groq client
-    client = Groq()
-    
-    # Create chat completion
     try:
+        # Validate image bytes
+        if not image_bytes:
+            return False, "No image data provided"
+
+        # If no user message is provided, use a default description request
+        if not user_message:
+            user_message = "Please describe this image in detail and tell me what you see."
+        
+        # Encode the image to base64
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+        
+        # Initialize Groq client
+        client = Groq()
+        
+        # Create chat completion with image context - removed system message
         chat_completion = client.chat.completions.create(
             messages=[
                 {
@@ -74,16 +71,16 @@ def handle_image(image_bytes, user_message=None, model="llama-3.2-90b-vision-pre
                     ],
                 }
             ],
-            model=model
+            model=model,
+            max_tokens=1000
         )
         
         # Clean and return the model's response
         raw_response = chat_completion.choices[0].message.content
-        return clean_response(raw_response)
+        return True, clean_response(raw_response)
     
     except Exception as e:
-        # Handle potential errors
-        return f"An error occurred while processing the image: {str(e)}"
+        return False, f"Error processing image: {str(e)}"
 
 def convert_image_to_base64(image_path):
     """
